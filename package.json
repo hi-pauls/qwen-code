@@ -92,6 +92,7 @@
     "yargs": "^17.7.2"
   },
   "dependencies": {
+<<<<<<< Updated upstream
     "node-fetch": "^3.3.2",
     "strip-ansi": "^7.1.0"
   },
@@ -103,5 +104,9 @@
     "@lydell/node-pty-win32-arm64": "1.1.0",
     "@lydell/node-pty-win32-x64": "1.1.0",
     "node-pty": "^1.0.0"
+=======
+    "axios": "^1.11.0",
+    "node-fetch": "^3.3.2"
+>>>>>>> Stashed changes
   }
 }

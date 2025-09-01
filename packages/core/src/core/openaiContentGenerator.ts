@@ -26,6 +26,7 @@ import {
   ContentGeneratorConfig,
 } from './contentGenerator.js';
 import OpenAI from 'openai';
+import axios from 'axios';
 import { logApiError, logApiResponse } from '../telemetry/loggers.js';
 import { ApiErrorEvent, ApiResponseEvent } from '../telemetry/types.js';
 import { Config } from '../config/config.js';
@@ -135,12 +136,101 @@ export class OpenAIContentGenerator implements ContentGenerator {
           : {}),
     };
 
+    // Create axios instance with no timeout
+    const axiosInstance = axios.create({
+      timeout: 0, // Disable timeout completely
+      maxRedirects: 5,
+    });
+
     this.client = new OpenAI({
       apiKey: contentGeneratorConfig.apiKey,
       baseURL: contentGeneratorConfig.baseUrl,
-      timeout: contentGeneratorConfig.timeout ?? 120000,
+      timeout: 0, // Disable OpenAI client timeout
       maxRetries: contentGeneratorConfig.maxRetries ?? 3,
       defaultHeaders,
+      fetch: async (url: RequestInfo | URL, options: RequestInit = {}) => {
+        const method = (options.method || 'GET').toLowerCase();
+        const headers = options.headers || {};
+        const body = options.body;
+
+        // Convert Headers object to plain object for axios
+        let axiosHeaders: Record<string, string> = {};
+        if (headers instanceof Headers) {
+          headers.forEach((value, key) => {
+            axiosHeaders[key] = value;
+          });
+        } else if (Array.isArray(headers)) {
+          headers.forEach(([key, value]) => {
+            axiosHeaders[key] = value;
+          });
+        } else if (typeof headers === 'object') {
+          axiosHeaders = headers as Record<string, string>;
+        }
+
+        // Determine response type based on content-type or streaming expectation
+        const isStreamingRequest =
+          axiosHeaders['accept']?.includes('text/event-stream');
+
+        const axiosConfig = {
+          method,
+          url: url.toString(),
+          headers: axiosHeaders,
+          data: body,
+          timeout: 0, // No timeout
+          responseType: isStreamingRequest
+            ? ('stream' as const)
+            : ('json' as const),
+          validateStatus: () => true, // Don't throw for HTTP error codes
+        };
+
+        try {
+          const response = await axiosInstance.request(axiosConfig);
+
+          // For streaming responses, return the stream directly
+          if (
+            isStreamingRequest &&
+            response.data &&
+            typeof response.data.pipe === 'function'
+          ) {
+            return new Response(response.data, {
+              status: response.status,
+              statusText: response.statusText,
+              headers: new Headers(response.headers as Record<string, string>),
+            });
+          }
+
+          // For non-streaming JSON responses, convert back to JSON string for fetch compatibility
+          const responseData =
+            typeof response.data === 'object'
+              ? JSON.stringify(response.data)
+              : String(response.data);
+          return new Response(responseData, {
+            status: response.status,
+            statusText: response.statusText,
+            headers: new Headers(response.headers as Record<string, string>),
+          });
+        } catch (error: any) {
+          // Network or other errors - convert to fetch-compatible error
+          if (error.code === 'ECONNABORTED') {
+            throw new Error('Request timeout');
+          }
+          if (error.response) {
+            // HTTP error response
+            const errorData =
+              typeof error.response.data === 'string'
+                ? error.response.data
+                : JSON.stringify(error.response.data);
+            return new Response(errorData, {
+              status: error.response.status,
+              statusText: error.response.statusText,
+              headers: new Headers(
+                error.response.headers as Record<string, string>,
+              ),
+            });
+          }
+          throw new Error(`Network error: ${error.message}`);
+        }
+      },
     });
   }
 
